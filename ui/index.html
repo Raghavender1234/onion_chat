@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hush — Private Serverless Messenger</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <script>
+    window.__ONIONCHAT_TOKEN__ = "__LOCAL_SESSION_TOKEN__";
+  </script>
+
+  <!-- Toast notifications -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Global Drag & Drop QR Overlay -->
+  <div id="drop-overlay" class="drop-overlay hidden">
+    <div class="drop-overlay-card">
+      <div class="drop-icon">📷</div>
+      <h2>Drop QR Code to Add Friend</h2>
+      <p>Release the QR image anywhere to decode their private invite offline</p>
+    </div>
+  </div>
+
+  <!-- Onboarding / Unlock Screen -->
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <div class="logo-badge">🤫</div>
+        <div>
+          <h1>Hush</h1>
+          <p class="subtitle">Serverless • No Phone Number • End-to-End Encrypted</p>
+        </div>
+      </div>
+
+      <!-- Unlock Existing Vault Form -->
+      <div id="unlock-panel" class="hidden">
+        <h2>Unlock Your Local Vault</h2>
+        <p class="muted">Your identity, media, and messages are encrypted locally on this device.</p>
+        <div class="field">
+          <label for="unlock-passphrase">Vault Passphrase</label>
+          <input id="unlock-passphrase" type="password" placeholder="Enter your passphrase..." />
+        </div>
+        <button id="btn-unlock" class="btn btn-primary btn-full">Unlock &amp; Connect</button>
+        <div class="divider"><span>or</span></div>
+        <button id="btn-wipe-locked" class="btn btn-danger-ghost btn-full">Wipe Vault &amp; Start Fresh</button>
+      </div>
+
+      <!-- New User Onboarding Form -->
+      <div id="onboard-panel">
+        <h2>Create Your Private Profile</h2>
+        <p class="muted">No servers, no phone number, no tracking. Everything stays on your device.</p>
+
+        <div class="field">
+          <label for="input-display-name">Your Name</label>
+          <input id="input-display-name" type="text" maxlength="48" placeholder="e.g. Alex" />
+        </div>
+
+        <div class="field">
+          <label for="input-username">Choose a Username</label>
+          <div class="username-preview-wrap">
+            <span class="at-prefix">@</span>
+            <input id="input-username" type="text" maxlength="32" placeholder="e.g. alex" />
+          </div>
+          <small class="hint">Paired with a unique cryptographic key on your device so nobody can impersonate you.</small>
+        </div>
+
+        <div class="field">
+          <label>Privacy Storage Mode</label>
+          <div class="mode-grid">
+            <label class="mode-card selected" id="mode-vault-card">
+              <input type="radio" name="storage-mode" value="vault" checked />
+              <div class="mode-title">🔒 Encrypted Vault</div>
+              <div class="mode-desc">Saves your profile, chats &amp; media locally encrypted</div>
+            </label>
+            <label class="mode-card" id="mode-ghost-card">
+              <input type="radio" name="storage-mode" value="ghost" />
+              <div class="mode-title">👻 Ghost Mode</div>
+              <div class="mode-desc">RAM-only. Zero disk traces when you close the app</div>
+            </label>
+          </div>
+        </div>
+
+        <div class="field" id="passphrase-field">
+          <label for="input-passphrase">Optional Vault Passphrase (recommended)</label>
+          <input id="input-passphrase" type="password" placeholder="Leave blank for instant auto-unlock" />
+        </div>
+
+        <button id="btn-create-identity" class="btn btn-primary btn-full">
+          Create My Private Profile
+        </button>
+      </div>
+
+      <!-- Connection Progress -->
+      <div id="tor-boot-panel" class="hidden">
+        <div class="boot-spinner"></div>
+        <h3 id="tor-boot-title">Connecting Securely...</h3>
+        <p id="tor-boot-msg" class="muted">Initializing encrypted network...</p>
+        <div class="progress-bar">
+          <div id="tor-boot-fill" class="progress-fill" style="width: 5%"></div>
+        </div>
+        <small class="hint">First-time setup may take a moment to prepare the security engine.</small>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main WhatsApp-like App Shell -->
+  <div id="app-shell" class="app-shell hidden">
+    <!-- Left Sidebar -->
+    <aside class="sidebar">
+      <header class="sidebar-header">
+        <div class="my-profile-chip" id="btn-change-avatar" title="Click to change Profile Photo">
+          <div class="avatar" id="my-avatar">A</div>
+          <div class="my-info">
+            <div class="my-name" id="my-display-name">Alex</div>
+            <div class="my-handle" id="my-username">@alex</div>
+          </div>
+        </div>
+        <input type="file" id="avatar-file-input" accept="image/*" class="hidden" />
+        <div class="header-actions">
+          <button class="icon-btn" id="btn-my-qr" title="My QR Code">QR</button>
+          <button class="icon-btn" id="btn-add-friend" title="Add Friend (Drop QR)">＋</button>
+          <button class="icon-btn" id="btn-trash-backup" title="Trash &amp; Encrypted Backup">♻️</button>
+          <button class="icon-btn" id="btn-theme" title="Toggle Dark/Light Theme">◐</button>
+          <button class="icon-btn danger" id="btn-panic-wipe" title="Panic Wipe All Data">🗑</button>
+        </div>
+      </header>
+
+      <!-- Network Status Banner -->
+      <div class="tor-strip" id="tor-strip" title="Click to copy your invite link">
+        <span class="status-dot" id="tor-dot"></span>
+        <span class="tor-strip-text" id="tor-strip-text">Connecting securely...</span>
+        <span class="copy-tag">Copy Invite</span>
+      </div>
+
+      <!-- Search -->
+      <div class="search-box">
+        <input id="search-friends" type="text" placeholder="Search friends..." />
+      </div>
+
+      <!-- 24h Friends-Only Stories Strip -->
+      <div class="stories-strip" id="stories-strip">
+        <div class="story-bubble add-story" id="btn-add-story" title="Add 24h Story (Saved Friends Only)">
+          <div class="story-ring add">+</div>
+          <span>My Story</span>
+        </div>
+        <div id="stories-list" class="stories-list"></div>
+      </div>
+
+      <!-- Incoming Friend Requests -->
+      <div id="requests-section" class="requests-section hidden">
+        <div class="section-label">Friend Requests</div>
+        <div id="requests-list"></div>
+      </div>
+
+      <!-- Friends / Chats List -->
+      <div class="friends-list" id="friends-list">
+        <div class="empty-friends" id="empty-friends">
+          <p>No friends yet.</p>
+          <p class="muted">Share your <strong>QR Code</strong> or drag &amp; drop a friend's QR image anywhere here!</p>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Right Chat Area -->
+    <main class="chat-area">
+      <!-- Empty Welcome State -->
+      <div id="chat-empty-state" class="chat-empty-state">
+        <div class="empty-illustration">🤫</div>
+        <h2>Hush Messenger</h2>
+        <p class="muted">
+          Chat and share 4K videos, photos, and files directly peer-to-peer.<br />
+          No central servers. No phone numbers. Nobody can trace or possess your data.
+        </p>
+        <div class="empty-actions">
+          <button class="btn btn-primary" id="btn-empty-my-qr">Share My QR Code</button>
+          <button class="btn btn-secondary" id="btn-empty-add-friend">Drag &amp; Drop Friend's QR</button>
+        </div>
+        <div class="tip-box">
+          <strong>Tip:</strong> You can drag and drop any friend's QR PNG/JPG directly onto this window at any time!
+        </div>
+      </div>
+
+      <!-- Active Chat View -->
+      <div id="active-chat" class="active-chat hidden">
+        <header class="chat-header">
+          <div class="chat-peer">
+            <div class="avatar" id="peer-avatar">B</div>
+            <div>
+              <div class="peer-name-row">
+                <span class="peer-name" id="peer-name">Bob</span>
+                <span class="peer-username" id="peer-username">@bob</span>
+              </div>
+              <div class="peer-status" id="peer-status">Checking Tor presence...</div>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button class="btn btn-sm btn-secondary" id="btn-verify-key" title="Verify Safety Key">🛡 Verify</button>
+            <button class="btn btn-sm btn-secondary" id="btn-delete-chat" title="Delete or Shred Chat">🗑 Clear</button>
+            <button class="btn btn-sm btn-danger-ghost" id="btn-remove-friend" title="Remove Friend">Remove</button>
+          </div>
+        </header>
+
+        <div class="messages-viewport" id="messages-viewport">
+          <div id="messages-list" class="messages-list"></div>
+          <div id="typing-indicator" class="typing-indicator hidden">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+
+        <!-- Emoji Picker Popover -->
+        <div id="emoji-picker" class="emoji-picker hidden"></div>
+
+        <!-- Attachment Preview Bar -->
+        <div id="attachment-bar" class="attachment-bar hidden">
+          <span id="attachment-name">file.png</span>
+          <button id="btn-clear-attachment" class="icon-btn">✕</button>
+        </div>
+
+        <footer class="composer">
+          <button class="icon-btn" id="btn-emoji" title="Emoji">😊</button>
+          <button class="icon-btn" id="btn-attach" title="Share 4K Video, Photo, or File (up to 1 GB)">📎</button>
+          <input type="file" id="file-attach-input" class="hidden" />
+          <textarea
+            id="message-input"
+            rows="1"
+            placeholder="Type an encrypted message..."
+          ></textarea>
+          <button class="btn-send" id="btn-send" title="Send">➤</button>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal: My QR Code -->
+  <div id="modal-my-qr" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>My Private Hush QR</h3>
+        <button class="icon-btn modal-close" data-close="modal-my-qr">✕</button>
+      </div>
+      <div class="modal-body center">
+        <div class="qr-frame">
+          <img id="my-qr-img" alt="My QR Code" />
+        </div>
+        <div class="qr-identity">
+          <strong id="qr-card-name">Alex</strong>
+          <span id="qr-card-user" class="muted">@alex</span>
+        </div>
+        <div class="onion-box" id="qr-onion-box" title="Click to copy invite link"></div>
+        <div class="safety-box">
+          Safety Key: <code id="qr-safety-key"></code>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" id="btn-download-qr-card">⬇ Download QR Card (PNG)</button>
+          <button class="btn btn-secondary" id="btn-copy-invite">📋 Copy Invite Link</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Friend (Drag & Drop QR / Paste Link) -->
+  <div id="modal-add-friend" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Add Friend Anonymously</h3>
+        <button class="icon-btn modal-close" data-close="modal-add-friend">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="qr-dropzone" class="qr-dropzone">
+          <div class="drop-icon">📷</div>
+          <p><strong>Drag &amp; Drop Friend's QR Image Here</strong></p>
+          <p class="muted">Supports PNG, JPG, WEBP, BMP screenshots</p>
+          <button class="btn btn-secondary btn-sm" id="btn-browse-qr">Browse QR Image</button>
+          <input type="file" id="qr-file-input" accept="image/*" class="hidden" />
+        </div>
+
+        <div class="divider"><span>or paste invite link</span></div>
+
+        <div class="field-row">
+          <input id="input-invite-uri" type="text" placeholder="hush://v1?d=..." />
+          <button class="btn btn-primary" id="btn-parse-invite">Connect</button>
+        </div>
+
+        <div id="friend-preview" class="friend-preview hidden">
+          <div class="preview-info">
+            <div class="avatar" id="preview-avatar">?</div>
+            <div>
+              <div class="preview-name" id="preview-name">Name</div>
+              <div class="muted" id="preview-user">@username</div>
+              <div class="preview-onion" id="preview-onion">xxxx.onion</div>
+              <div class="safety-box">Safety Key: <code id="preview-fp"></code></div>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-full" id="btn-confirm-add-friend">
+            Send Anonymous Friend Request
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Verify Safety Key -->
+  <div id="modal-verify" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Verify End-to-End Encryption</h3>
+        <button class="icon-btn modal-close" data-close="modal-verify">✕</button>
+      </div>
+      <div class="modal-body center">
+        <p class="muted">
+          Compare this Safety Key with <strong id="verify-peer-name">your friend</strong> out-of-band to guarantee zero man-in-the-middle interception.
+        </p>
+        <div class="safety-box large"><code id="verify-fp-code"></code></div>
+        <p class="muted small" id="verify-onion-full"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Story (24h Friends-Only) -->
+  <div id="modal-add-story" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Post a 24h Story (Saved Friends Only)</h3>
+        <button class="icon-btn modal-close" data-close="modal-add-story">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:10px;">Only your saved friends can see this. Zero servers, auto-deletes in 24 hours.</p>
+        <div class="field">
+          <label for="story-text-input">Text Status (or add a photo/video below)</label>
+          <textarea id="story-text-input" rows="3" maxlength="500" placeholder="What's on your mind?"></textarea>
+        </div>
+        <div class="field">
+          <label>Background Color (for text status)</label>
+          <div class="color-swatches" id="story-colors">
+            <button type="button" class="swatch active" data-color="#005c4b" style="background:#005c4b"></button>
+            <button type="button" class="swatch" data-color="#1d4ed8" style="background:#1d4ed8"></button>
+            <button type="button" class="swatch" data-color="#7c3aed" style="background:#7c3aed"></button>
+            <button type="button" class="swatch" data-color="#be123c" style="background:#be123c"></button>
+            <button type="button" class="swatch" data-color="#b45309" style="background:#b45309"></button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Or Attach Photo / Video</label>
+          <input type="file" id="story-file-input" accept="image/*,video/*" />
+        </div>
+        <div class="field">
+          <label for="story-caption-input">Optional Caption</label>
+          <input id="story-caption-input" type="text" maxlength="200" placeholder="Add a caption..." />
+        </div>
+        <button id="btn-publish-story" class="btn btn-primary btn-full" style="margin-top:16px;">
+          Share Story with Friends
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Story Viewer -->
+  <div id="modal-story-viewer" class="modal hidden">
+    <div class="story-viewer-card">
+      <div class="story-progress-bar"><div id="story-progress-fill" class="story-progress-fill"></div></div>
+      <div class="story-viewer-header">
+        <div class="chat-peer">
+          <div class="avatar" id="story-viewer-avatar">M</div>
+          <div>
+            <div class="peer-name" id="story-viewer-name">Maya</div>
+            <div class="muted small" id="story-viewer-time">Just now</div>
+          </div>
+        </div>
+        <button class="icon-btn modal-close" data-close="modal-story-viewer">✕</button>
+      </div>
+      <div class="story-viewer-body" id="story-viewer-body"></div>
+      <div class="story-viewer-caption hidden" id="story-viewer-caption"></div>
+      <div class="story-viewer-reply" id="story-viewer-reply">
+        <input id="story-reply-input" type="text" placeholder="Reply privately to this story..." />
+        <button class="btn btn-primary btn-sm" id="btn-send-story-reply">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Trash & Encrypted Backup -->
+  <div id="modal-trash-backup" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>♻️ Recently Deleted &amp; Local Backup</h3>
+        <button class="icon-btn modal-close" data-close="modal-trash-backup">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="section-label">Recently Deleted Chats (Only You Can Restore)</div>
+        <div id="trash-list" style="max-height:160px;overflow-y:auto;margin-bottom:10px;"></div>
+        <button class="btn btn-danger-ghost btn-sm" id="btn-empty-all-trash" style="margin-bottom:14px;">Permanently Shred All Trash</button>
+
+        <div class="divider"><span>Encrypted Local Backup (.hushbackup)</span></div>
+        <div class="field">
+          <label for="backup-password">Backup Password (only you can decrypt)</label>
+          <input id="backup-password" type="password" placeholder="Enter backup password..." />
+        </div>
+        <div class="modal-actions" style="margin-top:12px;">
+          <button class="btn btn-primary btn-sm" id="btn-export-backup">⬇ Export Backup</button>
+          <button class="btn btn-secondary btn-sm" id="btn-import-backup">⬆ Restore Backup</button>
+          <input type="file" id="backup-file-input" accept=".hushbackup" class="hidden" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Delete / Shred Chat -->
+  <div id="modal-delete-chat" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Delete Chat History</h3>
+        <button class="icon-btn modal-close" data-close="modal-delete-chat">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:14px;">Choose how to delete your conversation with this friend:</p>
+        <button class="btn btn-secondary btn-full" id="btn-delete-for-me" style="margin-bottom:10px;">
+          ♻️ Delete for Me (Move to My Trash — Recoverable)
+        </button>
+        <button class="btn btn-danger-ghost btn-full" id="btn-shred-for-both">
+          🔥 Shred for Both (Wipe My Copy &amp; Destroy Friend's Copy Forever)
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
