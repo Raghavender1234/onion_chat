@@ -55,8 +55,22 @@ class OnionChatNode:
         self._runner: Optional[web.AppRunner] = None
         self._app = self._build_app()
 
+    @web.middleware
+    async def _api_error_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
+        try:
+            return await handler(request)
+        except web.HTTPException:
+            raise
+        except Exception as exc:
+            if request.path.startswith("/api/"):
+                return web.json_response({"error": str(exc) or exc.__class__.__name__}, status=500)
+            return web.Response(status=500, text="Internal error")
+
     def _build_app(self) -> web.Application:
-        app = web.Application(client_max_size=1024 * 1024 * 1024)
+        app = web.Application(
+            client_max_size=1024 * 1024 * 1024,
+            middlewares=[self._api_error_middleware],
+        )
         # P2P endpoint (reachable via Encrypted P2P Hidden Service)
         app.router.add_post("/p2p/packet", self.handle_p2p_packet)
 

@@ -10,6 +10,7 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -157,6 +158,8 @@ class TorManager:
         self.process: Optional[subprocess.Popen[str]] = None
         self._reader_task: Optional[asyncio.Task[None]] = None
         self._ready_event = asyncio.Event()
+        self._tls_blocked_event = asyncio.Event()
+        self._last_tor_pct: int = 0
 
     @property
     def hidden_service_dir(self) -> Path:
@@ -186,6 +189,70 @@ class TorManager:
         if os.name != "nt":
             os.chmod(hs_dir, 0o700)
 
+        pt_dir = tor_bin.parent / "pluggable_transports"
+        lyrebird = pt_dir / ("lyrebird.exe" if os.name == "nt" else "lyrebird")
+        pt_cfg = pt_dir / "pt_config.json"
+        has_bridges = lyrebird.is_file() and pt_cfg.is_file()
+
+        # Try direct Tor first (fast-fallback to obfs4 bridges if blocked/intercepted)
+        connected = await self._launch_tor_attempt(
+            tor_bin=tor_bin,
+            data_dir=data_dir,
+            hs_dir=hs_dir,
+            use_bridges=False,
+            lyrebird=lyrebird,
+            pt_cfg=pt_cfg,
+            report=report,
+            timeout=25 if has_bridges else 120,
+        )
+
+        if not connected and has_bridges:
+            self.stop()
+            report("Direct route blocked; switching to encrypted bridge mode...", 15)
+            connected = await self._launch_tor_attempt(
+                tor_bin=tor_bin,
+                data_dir=data_dir,
+                hs_dir=hs_dir,
+                use_bridges=True,
+                lyrebird=lyrebird,
+                pt_cfg=pt_cfg,
+                report=report,
+                timeout=120,
+            )
+
+        if not connected:
+            self.stop()
+            raise RuntimeError(
+                "Secure network timed out while connecting. Check your internet connection or firewall."
+            )
+
+        hostname_file = hs_dir / "hostname"
+        for _ in range(30):
+            if hostname_file.is_file():
+                onion = hostname_file.read_text(encoding="utf-8").strip()
+                if onion.endswith(".onion"):
+                    self.onion_address = onion
+                    report("Encrypted Network Connected", 100)
+                    return onion
+            await asyncio.sleep(0.2)
+
+        raise RuntimeError("Connected, but private identity address was not created.")
+
+    async def _launch_tor_attempt(
+        self,
+        tor_bin: Path,
+        data_dir: Path,
+        hs_dir: Path,
+        use_bridges: bool,
+        lyrebird: Path,
+        pt_cfg: Path,
+        report: Callable[[str, int], None],
+        timeout: int,
+    ) -> bool:
+        self._ready_event = asyncio.Event()
+        self._tls_blocked_event = asyncio.Event()
+        self._last_tor_pct = 0
+
         self.socks_port = find_free_port()
         self.control_port = find_free_port()
 
@@ -195,18 +262,26 @@ class TorManager:
             f"ControlPort 127.0.0.1:{self.control_port}",
             f"DataDirectory {data_dir}",
             f"HiddenServiceDir {hs_dir}",
-            f"HiddenServiceVersion 3",
+            "HiddenServiceVersion 3",
             f"HiddenServicePort 80 127.0.0.1:{self.local_http_port}",
             "Log notice stdout",
             "AvoidDiskWrites 1",
         ]
-        # Add geoip files if bundled next to tor.exe
         geoip = tor_bin.parent / "geoip"
         geoip6 = tor_bin.parent / "geoip6"
         if geoip.is_file():
             torrc_lines.append(f"GeoIPFile {geoip}")
         if geoip6.is_file():
             torrc_lines.append(f"GeoIPv6File {geoip6}")
+
+        if use_bridges:
+            cfg = json.loads(pt_cfg.read_text(encoding="utf-8"))
+            obfs4_bridges = cfg.get("bridges", {}).get("obfs4", [])
+            if obfs4_bridges:
+                torrc_lines.append("UseBridges 1")
+                torrc_lines.append(f"ClientTransportPlugin obfs4 exec {lyrebird}")
+                for b in obfs4_bridges[:5]:
+                    torrc_lines.append(f"Bridge {b}")
 
         torrc_path.write_text("\n".join(torrc_lines) + "\n", encoding="utf-8")
 
@@ -225,23 +300,24 @@ class TorManager:
         )
 
         self._reader_task = asyncio.create_task(self._monitor_stdout(report))
+
+        ready_task = asyncio.create_task(self._ready_event.wait())
+        blocked_task = asyncio.create_task(self._tls_blocked_event.wait())
         try:
-            await asyncio.wait_for(self._ready_event.wait(), timeout=120)
-        except asyncio.TimeoutError as exc:
-            self.stop()
-            raise RuntimeError("Secure network timed out while connecting (120s).") from exc
-
-        hostname_file = hs_dir / "hostname"
-        for _ in range(30):
-            if hostname_file.is_file():
-                onion = hostname_file.read_text(encoding="utf-8").strip()
-                if onion.endswith(".onion"):
-                    self.onion_address = onion
-                    report("Encrypted Network Connected", 100)
-                    return onion
-            await asyncio.sleep(0.2)
-
-        raise RuntimeError("Connected, but private identity address was not created.")
+            done, pending = await asyncio.wait(
+                {ready_task, blocked_task},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            if ready_task in done:
+                return True
+            return False
+        except Exception:
+            ready_task.cancel()
+            blocked_task.cancel()
+            return False
 
     async def _monitor_stdout(self, report: Callable[[str, int], None]) -> None:
         if not self.process or not self.process.stdout:
@@ -251,9 +327,13 @@ class TorManager:
             line = await loop.run_in_executor(None, self.process.stdout.readline)
             if not line:
                 break
+            if "bad CERTS cell" in line or "Problem bootstrapping" in line:
+                if self._last_tor_pct < 25:
+                    self._tls_blocked_event.set()
             m = re.search(r"Bootstrapped (\d+)%[^:]*:\s*(.+)", line)
             if m:
                 pct = int(m.group(1))
+                self._last_tor_pct = pct
                 mapped_pct = max(15, min(99, pct))
                 if pct < 50:
                     friendly = "Establishing encrypted relays..."

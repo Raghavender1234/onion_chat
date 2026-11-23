@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 import cv2
 import numpy as np
 import qrcode
+import zxingcpp
 from PIL import Image, ImageDraw, ImageFont
 
 from .crypto import compute_fingerprint
@@ -140,16 +141,20 @@ def generate_invite_card_png(
 
 
 def decode_qr_from_bytes(image_bytes: bytes) -> Optional[str]:
-    """Decode a QR code from raw image bytes using OpenCV with robust preprocessing."""
+    """Decode a QR code from raw image bytes using zxing-cpp with OpenCV fallback."""
+    try:
+        pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        results = zxingcpp.read_barcodes(pil_img)
+        for r in results:
+            if r.text:
+                return r.text.strip()
+    except Exception:
+        pass
+
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        # Fallback via Pillow (e.g. WebP/GIF/BMP edge cases)
-        try:
-            pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-        except Exception:
-            return None
+        return None
 
     detector = cv2.QRCodeDetector()
 
