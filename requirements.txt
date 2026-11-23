@@ -6,4 +6,6 @@ pillow>=10.3.0
 opencv-python-headless>=4.9.0
 zxing-cpp>=2.2.0
 pywebview>=5.0
+pystray>=0.19.5
+winotify>=1.1.0
 pyinstaller>=6.6.0

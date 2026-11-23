@@ -12,7 +12,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 import aiohttp
 from aiohttp import web
@@ -38,9 +38,15 @@ from .tor_manager import TorManager, find_free_port
 class OnionChatNode:
     """Coordinates the local aiohttp server, Tor hidden service, and P2P messaging."""
 
-    def __init__(self, ui_dir: Path, profile_dir: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        ui_dir: Path,
+        profile_dir: Optional[Path] = None,
+        on_notify: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
         self.ui_dir = ui_dir
         self.store = VaultStore(base_dir=profile_dir)
+        self.on_notify = on_notify
         self.http_port = find_free_port()
         self.local_token = secrets.token_urlsafe(24)
         self.tor: Optional[TorManager] = None
@@ -123,6 +129,13 @@ class OnionChatNode:
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
+
+    def _notify(self, title: str, body: str) -> None:
+        if self.on_notify:
+            try:
+                self.on_notify(title, body)
+            except Exception:
+                pass
 
     def _emit(self, event: str, data: Any) -> None:
         payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
@@ -971,6 +984,8 @@ class OnionChatNode:
                         },
                     )
                 self._emit("friends_updated", self.store.friends)
+                req_name = str(payload.get("display_name", "Someone"))[:48]
+                self._notify("New Friend Request", f"{req_name} wants to connect on Hush")
             elif action == "accept":
                 if friend:
                     self.store.upsert_friend(
@@ -978,6 +993,7 @@ class OnionChatNode:
                         {"status": "accepted", "online": True, "last_seen": time.time()},
                     )
                     self._emit("friends_updated", self.store.friends)
+                    self._notify("Friend Request Accepted", f"{friend.get('display_name', 'Friend')} is now connected!")
             return web.json_response({"ok": True})
 
         # If we already sent a friend request (pending_out) and they send us a valid signed packet,
@@ -1012,6 +1028,9 @@ class OnionChatNode:
             self.store.save()
             self._emit("message", {"onion": sender_onion, "message": msg})
             self._emit("friends_updated", self.store.friends)
+            sender_name = friend.get("display_name", "Friend")
+            preview = msg["text"] or (f"Sent {msg['attachment']['name']}" if msg.get("attachment") else "New message")
+            self._notify(f"{sender_name}", preview[:120])
             return web.json_response({"ok": True, "ack": msg["id"]})
 
         if ptype == "media_chunk":
@@ -1050,6 +1069,8 @@ class OnionChatNode:
                 self.store.save()
                 self._emit("message", {"onion": sender_onion, "message": msg})
                 self._emit("friends_updated", self.store.friends)
+                sender_name = friend.get("display_name", "Friend")
+                self._notify(f"{sender_name}", f"Sent {filename}")
             return web.json_response({"ok": True, "chunk": idx})
 
         if ptype == "read":
