@@ -42,18 +42,20 @@ def find_free_port() -> int:
 
 def find_tor_binary() -> Optional[Path]:
     exe_name = "tor.exe" if os.name == "nt" else "tor"
-    candidates = []
+    app_tor_dir = get_app_data_dir() / "tor"
+    app_tor_exe = app_tor_dir / exe_name
 
+    # If bundled inside PyInstaller _MEIPASS, copy once to stable %LOCALAPPDATA%\Hush\tor
+    # so Windows Firewall does not see a new _MEIxxxxx temp path on every launch.
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        meipass = Path(getattr(sys, "_MEIPASS"))
-        candidates.append(meipass / "tor" / exe_name)
-        candidates.append(meipass / exe_name)
+        meipass_tor = Path(getattr(sys, "_MEIPASS")) / "tor"
+        if (meipass_tor / exe_name).is_file():
+            if not app_tor_exe.is_file():
+                shutil.copytree(meipass_tor, app_tor_dir, dirs_exist_ok=True)
+            return app_tor_exe
 
     project_root = Path(__file__).resolve().parent.parent
-    candidates.append(project_root / "tor" / exe_name)
-    candidates.append(get_app_data_dir() / "tor" / exe_name)
-
-    for c in candidates:
+    for c in (project_root / "tor" / exe_name, app_tor_exe):
         if c.is_file():
             return c
 
@@ -265,6 +267,7 @@ class TorManager:
             "HiddenServiceVersion 3",
             f"HiddenServicePort 80 127.0.0.1:{self.local_http_port}",
             "Log notice stdout",
+            f"Log notice file {self.tor_data_dir / 'tor.log'}",
             "AvoidDiskWrites 1",
         ]
         geoip = tor_bin.parent / "geoip"
@@ -280,7 +283,7 @@ class TorManager:
             if obfs4_bridges:
                 torrc_lines.append("UseBridges 1")
                 torrc_lines.append(f"ClientTransportPlugin obfs4 exec {lyrebird}")
-                for b in obfs4_bridges[:5]:
+                for b in obfs4_bridges:
                     torrc_lines.append(f"Bridge {b}")
 
         torrc_path.write_text("\n".join(torrc_lines) + "\n", encoding="utf-8")
@@ -349,9 +352,19 @@ class TorManager:
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
         if self.process and self.process.poll() is None:
+            pid = self.process.pid
             try:
-                self.process.terminate()
-                self.process.wait(timeout=5)
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW,  # type: ignore[attr-defined]
+                        timeout=5,
+                    )
+                else:
+                    self.process.terminate()
+                    self.process.wait(timeout=5)
             except Exception:
                 try:
                     self.process.kill()
